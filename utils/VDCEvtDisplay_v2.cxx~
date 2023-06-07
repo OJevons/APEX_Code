@@ -1,0 +1,618 @@
+//-----------------------------------------------------------------------------
+// APEX VDC event display - reworked to use TTree cuts
+// Oliver Jevons; 17-May-23
+//
+// Inputs: 
+// 1. Path to replayed APEX file
+//
+// Output:
+// 1. VDC event display
+//-----------------------------------------------------------------------------
+#include <TFile.h>
+#include <TTree.h>
+#include <TH2.h>
+#include "TEntryList.h"
+
+#include <iostream>
+
+using namespace std;
+
+// Tree variable structure
+struct APEXTreeVarStruct{
+  // VDC plane variables
+  Int_t Ndata_L_vdc_u1_wire, Ndata_L_vdc_u2_wire, Ndata_L_vdc_v1_wire, Ndata_L_vdc_v2_wire;
+  Int_t Ndata_R_vdc_u1_wire, Ndata_R_vdc_u2_wire, Ndata_R_vdc_v1_wire, Ndata_R_vdc_v2_wire;
+  Double_t L_vdc_u1_wire[200], L_vdc_u2_wire[200], L_vdc_v1_wire[200], L_vdc_v2_wire[200];
+  Double_t R_vdc_u1_wire[200], R_vdc_u2_wire[200], R_vdc_v1_wire[200], R_vdc_v2_wire[200];
+  Double_t L_vdc_u1_rawtime[200], L_vdc_u2_rawtime[200], L_vdc_v1_rawtime[200], L_vdc_v2_rawtime[200];
+  Double_t R_vdc_u1_rawtime[200], R_vdc_u2_rawtime[200], R_vdc_v1_rawtime[200], R_vdc_v2_rawtime[200];
+  // S2 scintillator variables
+  Int_t Ndata_L_s2_time, Ndata_R_s2_time, Ndata_L_s2_t_pads, Ndata_R_s2_t_pads, Ndata_L_s2_trpad, Ndata_R_s2_trpad;
+  Double_t L_s2_time[100], L_s2_t_pads[100], L_s2_trpad[4];
+  Double_t R_s2_time[100], R_s2_t_pads[100], R_s2_trpad[4];
+  // Global variables
+  Double_t DL_ltL1ARemote, DR_rtL1ARemote;
+  Double_t L_tr_n, R_tr_n;
+  Double_t DL_evtype;
+};
+
+// Declare histograms to be used
+// Left VDC
+TH2F* hLU1VDC_WireVsTime = new TH2F("hLU1",";Wire # (LU1);Raw time",1473,-0.25,367.25,3700,0,3700);
+TH2F* hLU2VDC_WireVsTime = new TH2F("hLU2",";Wire # (LU2);Raw time",1473,-0.25,367.25,3700,0,3700);
+TH2F* hLV1VDC_WireVsTime = new TH2F("hLV1",";Wire # (LV1);Raw time",1473,-0.25,367.25,3700,0,3700);
+TH2F* hLV2VDC_WireVsTime = new TH2F("hLV2",";Wire # (LV2);Raw time",1473,-0.25,367.25,3700,0,3700);
+// Right VDC
+TH2F* hRU1VDC_WireVsTime = new TH2F("hRU1",";Wire # (RU1);Raw time",1473,-0.25,367.25,3700,0,3700);
+TH2F* hRU2VDC_WireVsTime = new TH2F("hRU2",";Wire # (RU2);Raw time",1473,-0.25,367.25,3700,0,3700);
+TH2F* hRV1VDC_WireVsTime = new TH2F("hRV1",";Wire # (RV1);Raw time",1473,-0.25,367.25,3700,0,3700);
+TH2F* hRV2VDC_WireVsTime = new TH2F("hRV2",";Wire # (RV2);Raw time",1473,-0.25,367.25,3700,0,3700);
+// Left and right S2 scintillators (measured and projected)
+TH1F* hLS2_HitPad = new TH1F("hLS2","",16,-0.5,15.5);
+TH1F* hRS2_HitPad = new TH1F("hRS2","",16,-0.5,15.5);
+TH1F* hLS2_HitProj = new TH1F("hLS2_proj","",16,-0.5,15.5);
+TH1F* hRS2_HitProj = new TH1F("hRS2_proj","",16,-0.5,15.5);
+
+// Clone VDC histograms for plane-by-plane plots
+TH2F* hLU1VDC_WireVsTime_Clone = (TH2F*)hLU1VDC_WireVsTime->Clone("hLU1_clone");
+TH2F* hLU2VDC_WireVsTime_Clone = (TH2F*)hLU2VDC_WireVsTime->Clone("hLU2_clone");
+TH2F* hLV1VDC_WireVsTime_Clone = (TH2F*)hLV1VDC_WireVsTime->Clone("hLV1_clone");
+TH2F* hLV2VDC_WireVsTime_Clone = (TH2F*)hLV2VDC_WireVsTime->Clone("hLV2_clone");
+TH2F* hRU1VDC_WireVsTime_Clone = (TH2F*)hRU1VDC_WireVsTime->Clone("hRU1_clone");
+TH2F* hRU2VDC_WireVsTime_Clone = (TH2F*)hRU2VDC_WireVsTime->Clone("hRU2_clone");
+TH2F* hRV1VDC_WireVsTime_Clone = (TH2F*)hRV1VDC_WireVsTime->Clone("hRV1_clone");
+TH2F* hRV2VDC_WireVsTime_Clone = (TH2F*)hRV2VDC_WireVsTime->Clone("hRV2_clone");
+
+TLine* lVDCRawtimePeak = new TLine(-0.25,2900,367.25,2900);
+
+TString sS2Time_L[16];
+TString sS2Time_R[16];
+
+Bool_t kContinue{kTRUE};
+
+// Prototype function
+void SetBranchStatuses(TChain* C);
+
+void VDCEvtDisplay_v2(Int_t runno = 4400){
+  cout<<"--------------------------------------------"<<endl;
+  cout<<"--------- APEX VDC Event Display -----------"<<endl;
+  cout<<"--------- Run Number: "<<runno<<" -----------------"<<endl;
+  cout<<"--------------------------------------------"<<endl;
+
+  // Load run into TChain
+  TChain* C = new TChain("T");
+  TString sFile = "/w/work5/jlab/halla/APEX/full_events/apex_" + std::to_string(runno) +"*.root";
+  C->Add(sFile);
+
+  cout<<"\nAll files for run "<<runno<<" added.\n"<<endl;
+
+  // Activate branches relevant for macro
+  SetBranchStatuses(C);
+    
+  APEXTreeVarStruct APEX_TreeVars;
+
+  // Set Branch Addresses  
+  // LHRS VDC
+  C->SetBranchAddress("Ndata.L.vdc.u1.wire",&APEX_TreeVars.Ndata_L_vdc_u1_wire);
+  C->SetBranchAddress("Ndata.L.vdc.u2.wire",&APEX_TreeVars.Ndata_L_vdc_u2_wire);
+  C->SetBranchAddress("Ndata.L.vdc.v1.wire",&APEX_TreeVars.Ndata_L_vdc_v1_wire);
+  C->SetBranchAddress("Ndata.L.vdc.v2.wire",&APEX_TreeVars.Ndata_L_vdc_v2_wire);
+  C->SetBranchAddress("L.vdc.u1.wire",&APEX_TreeVars.L_vdc_u1_wire);
+  C->SetBranchAddress("L.vdc.u2.wire",&APEX_TreeVars.L_vdc_u2_wire);
+  C->SetBranchAddress("L.vdc.v1.wire",&APEX_TreeVars.L_vdc_v1_wire);
+  C->SetBranchAddress("L.vdc.v2.wire",&APEX_TreeVars.L_vdc_v2_wire);
+  C->SetBranchAddress("L.vdc.u1.rawtime",&APEX_TreeVars.L_vdc_u1_rawtime);
+  C->SetBranchAddress("L.vdc.u2.rawtime",&APEX_TreeVars.L_vdc_u2_rawtime);
+  C->SetBranchAddress("L.vdc.v1.rawtime",&APEX_TreeVars.L_vdc_v1_rawtime);
+  C->SetBranchAddress("L.vdc.v2.rawtime",&APEX_TreeVars.L_vdc_v2_rawtime);
+  // RHRS VDC
+  C->SetBranchAddress("Ndata.R.vdc.u1.wire",&APEX_TreeVars.Ndata_R_vdc_u1_wire);
+  C->SetBranchAddress("Ndata.R.vdc.u2.wire",&APEX_TreeVars.Ndata_R_vdc_u2_wire);
+  C->SetBranchAddress("Ndata.R.vdc.v1.wire",&APEX_TreeVars.Ndata_R_vdc_v1_wire);
+  C->SetBranchAddress("Ndata.R.vdc.v2.wire",&APEX_TreeVars.Ndata_R_vdc_v2_wire);
+  C->SetBranchAddress("R.vdc.u1.wire",&APEX_TreeVars.R_vdc_u1_wire);
+  C->SetBranchAddress("R.vdc.u2.wire",&APEX_TreeVars.R_vdc_u2_wire);
+  C->SetBranchAddress("R.vdc.v1.wire",&APEX_TreeVars.R_vdc_v1_wire);
+  C->SetBranchAddress("R.vdc.v2.wire",&APEX_TreeVars.R_vdc_v2_wire);
+  C->SetBranchAddress("R.vdc.u1.rawtime",&APEX_TreeVars.R_vdc_u1_rawtime);
+  C->SetBranchAddress("R.vdc.u2.rawtime",&APEX_TreeVars.R_vdc_u2_rawtime);
+  C->SetBranchAddress("R.vdc.v1.rawtime",&APEX_TreeVars.R_vdc_v1_rawtime);
+  C->SetBranchAddress("R.vdc.v2.rawtime",&APEX_TreeVars.R_vdc_v2_rawtime);
+  // S2
+  C->SetBranchAddress("L.s2.time",&APEX_TreeVars.L_s2_time);
+  C->SetBranchAddress("L.s2.t_pads",&APEX_TreeVars.L_s2_t_pads);
+  C->SetBranchAddress("L.s2.trpad",&APEX_TreeVars.L_s2_trpad);
+  C->SetBranchAddress("Ndata.L.s2.t_pads",&APEX_TreeVars.Ndata_L_s2_time);
+  C->SetBranchAddress("Ndata.L.s2.t_pads",&APEX_TreeVars.Ndata_L_s2_t_pads);
+  C->SetBranchAddress("Ndata.L.s2.trpad",&APEX_TreeVars.Ndata_L_s2_trpad);
+  C->SetBranchAddress("R.s2.time",&APEX_TreeVars.R_s2_time);
+  C->SetBranchAddress("R.s2.t_pads",&APEX_TreeVars.R_s2_t_pads);
+  C->SetBranchAddress("R.s2.trpad",&APEX_TreeVars.R_s2_trpad);
+  C->SetBranchAddress("Ndata.R.s2.t_pads",&APEX_TreeVars.Ndata_R_s2_time);
+  C->SetBranchAddress("Ndata.R.s2.t_pads",&APEX_TreeVars.Ndata_R_s2_t_pads);
+  C->SetBranchAddress("Ndata.R.s2.trpad",&APEX_TreeVars.Ndata_R_s2_trpad);
+  // Global
+  C->SetBranchAddress("DL.ltL1ARemote",&APEX_TreeVars.DL_ltL1ARemote);
+  C->SetBranchAddress("DR.rtL1Aremote",&APEX_TreeVars.DR_rtL1ARemote);
+  C->SetBranchAddress("L.tr.n",&APEX_TreeVars.L_tr_n);
+  C->SetBranchAddress("R.tr.n",&APEX_TreeVars.R_tr_n);
+  C->SetBranchAddress("DL.evtype",&APEX_TreeVars.DL_evtype);
+  
+  // Create S2 framing histogram
+  Float_t xbinedges[32] = {-0.51, 0.49, 0.51, 1.49, 1.51, 2.49, 2.51, 3.49, 3.51, 4.49, 4.51, 5.49, 5.51, 6.49, 6.51, 7.49, 7.51, 8.49, 8.51, 9.49, 9.51, 10.49, 10.51, 11.49, 11.51, 12.49, 12.51, 13.49, 13.51, 14.49, 14.51, 15.49};
+  TH1F* hS2_PaddleFrame = new TH1F("hS2_frame","",31,xbinedges);
+  for(int paddle{0}; paddle<15; paddle++){
+    hS2_PaddleFrame->Fill(paddle+0.5, 1.5);
+  }
+
+  lVDCRawtimePeak->SetLineColor(kCyan);
+  lVDCRawtimePeak->SetLineWidth(2);
+
+  // Drawing - define canvases, and draw empty histograms
+  gStyle->SetOptStat(00000000);
+  gStyle->SetPaintTextFormat("4.1f #mu s");
+  TString sCanvName = "cL_" + to_string(runno);
+  TCanvas* cL = new TCanvas("cL",sCanvName,1500,1000);
+  //cL->SetLeftMargin(0.12);
+  //cL->SetTopMargin(0.05);
+  cL->Divide(1,5,0,0);
+  
+  // Plot electron track from bottom of canvas (U1->V1->U2->V2)
+  cL->cd(5);
+  hLU1VDC_WireVsTime->SetMarkerSize(1);
+  hLU1VDC_WireVsTime->SetMarkerColor(kMagenta);
+  hLU1VDC_WireVsTime->SetMarkerStyle(21);
+  hLU1VDC_WireVsTime->Draw();
+  
+  cL->cd(4);
+  hLV1VDC_WireVsTime->SetMarkerSize(1);
+  hLV1VDC_WireVsTime->SetMarkerColor(kMagenta+1);
+  hLV1VDC_WireVsTime->SetMarkerStyle(21);
+  hLV1VDC_WireVsTime->Draw();
+  
+  cL->cd(3);
+  hLU2VDC_WireVsTime->SetMarkerSize(1);
+  hLU2VDC_WireVsTime->SetMarkerColor(kMagenta+2);
+  hLU2VDC_WireVsTime->SetMarkerStyle(21);
+  hLU2VDC_WireVsTime->Draw();
+  
+  cL->cd(2);
+  hLV2VDC_WireVsTime->SetMarkerSize(1);
+  hLV2VDC_WireVsTime->SetMarkerColor(kMagenta+3);
+  hLV2VDC_WireVsTime->SetMarkerStyle(21);
+  hLV2VDC_WireVsTime->Draw();
+  
+  cL->cd(1);
+  hS2_PaddleFrame->GetYaxis()->SetRangeUser(0,2);
+  hS2_PaddleFrame->Draw("B");
+  hLS2_HitPad->SetMarkerSize(1);
+  hLS2_HitPad->SetMarkerColor(kMagenta+3);
+  hLS2_HitPad->SetMarkerStyle(21);
+  hLS2_HitPad->Draw("Psame");
+  hLS2_HitProj->SetMarkerSize(2);
+  hLS2_HitProj->SetMarkerColor(kGreen);
+  hLS2_HitProj->SetMarkerStyle(33);
+  hLS2_HitProj->Draw("Psame");
+
+  sCanvName = "cR_" + to_string(runno);
+  TCanvas* cR = new TCanvas("cR",sCanvName,1500,1000);
+  //cR->SetLeftMargin(0.12);
+  //cR->SetTopMargin(0.05);
+  cR->Divide(1,5,0,0);
+  
+  // Plot electron track from bottom of canvas (U1->V1->U2->V2)
+  cR->cd(5);
+  hRU1VDC_WireVsTime->SetMarkerSize(1);
+  hRU1VDC_WireVsTime->SetMarkerColor(kAzure);
+  hRU1VDC_WireVsTime->SetMarkerStyle(21);
+  hRU1VDC_WireVsTime->Draw();
+
+  cR->cd(4);
+  hRV1VDC_WireVsTime->SetMarkerSize(1);
+  hRV1VDC_WireVsTime->SetMarkerColor(kAzure+1);
+  hRV1VDC_WireVsTime->SetMarkerStyle(21);
+  hRV1VDC_WireVsTime->Draw();
+
+  cR->cd(3);
+  hRU2VDC_WireVsTime->SetMarkerSize(1);
+  hRU2VDC_WireVsTime->SetMarkerColor(kAzure+2);
+  hRU2VDC_WireVsTime->SetMarkerStyle(21);
+  hRU2VDC_WireVsTime->Draw();
+  
+  cR->cd(2);
+  hRV2VDC_WireVsTime->SetMarkerSize(1);
+  hRV2VDC_WireVsTime->SetMarkerColor(kAzure+3);
+  hRV2VDC_WireVsTime->SetMarkerStyle(21);
+  hRV2VDC_WireVsTime->Draw();
+  
+  cR->cd(1);
+  hS2_PaddleFrame->GetYaxis()->SetRangeUser(0,2);
+  hS2_PaddleFrame->Draw("B");
+  hRS2_HitPad->SetMarkerSize(1);
+  hRS2_HitPad->SetMarkerColor(kAzure+3);
+  hRS2_HitPad->SetMarkerStyle(21);
+  hRS2_HitPad->Draw("Psame");
+  hRS2_HitProj->SetMarkerSize(2);
+  hRS2_HitProj->SetMarkerColor(kGreen);
+  hRS2_HitProj->SetMarkerStyle(33);
+  hRS2_HitProj->Draw("Psame");
+
+  sCanvName = "cL_split_" + to_string(runno);
+  TCanvas* cL_split = new TCanvas("cL_split",sCanvName,1500,1000);
+  cL_split->SetLeftMargin(0.12);
+  cL_split->SetTopMargin(0.05);
+  cL_split->Divide(2,2);
+
+  cL_split->cd(1);
+  hLU1VDC_WireVsTime_Clone->SetMarkerSize(2);
+  hLU1VDC_WireVsTime_Clone->SetMarkerColor(kMagenta);
+  hLU1VDC_WireVsTime_Clone->SetMarkerStyle(21);
+  hLU1VDC_WireVsTime_Clone->Draw();
+
+  cL_split->cd(2);
+  hLV1VDC_WireVsTime_Clone->SetMarkerSize(2);
+  hLV1VDC_WireVsTime_Clone->SetMarkerColor(kMagenta+1);
+  hLV1VDC_WireVsTime_Clone->SetMarkerStyle(21);
+  hLV1VDC_WireVsTime_Clone->Draw();
+
+  cL_split->cd(3);
+  hLU2VDC_WireVsTime_Clone->SetMarkerSize(2);
+  hLU2VDC_WireVsTime_Clone->SetMarkerColor(kMagenta+2);
+  hLU2VDC_WireVsTime_Clone->SetMarkerStyle(21);
+  hLU2VDC_WireVsTime_Clone->Draw();
+  
+  cL_split->cd(4);
+  hLV2VDC_WireVsTime_Clone->SetMarkerSize(2);
+  hLV2VDC_WireVsTime_Clone->SetMarkerColor(kMagenta+3);
+  hLV2VDC_WireVsTime_Clone->SetMarkerStyle(21);
+  hLV2VDC_WireVsTime_Clone->Draw();
+
+  sCanvName = "cR_split_" + to_string(runno);
+  TCanvas* cR_split = new TCanvas("cR_split",sCanvName,1500,1000);
+  cR_split->SetLeftMargin(0.12);
+  cR_split->SetTopMargin(0.05);
+  cR_split->Divide(2,2);
+  
+  // Plot electron track from bottom of canvas (U1->V1->U2->V2)
+  cR_split->cd(1);
+  hRU1VDC_WireVsTime_Clone->SetMarkerSize(2);
+  hRU1VDC_WireVsTime_Clone->SetMarkerColor(kAzure);
+  hRU1VDC_WireVsTime_Clone->SetMarkerStyle(21);
+  hRU1VDC_WireVsTime_Clone->Draw();
+
+  cR_split->cd(2);
+  hRV1VDC_WireVsTime_Clone->SetMarkerSize(2);
+  hRV1VDC_WireVsTime_Clone->SetMarkerColor(kAzure+1);
+  hRV1VDC_WireVsTime_Clone->SetMarkerStyle(21);
+  hRV1VDC_WireVsTime_Clone->Draw();
+
+  cR_split->cd(3);
+  hRU2VDC_WireVsTime_Clone->SetMarkerSize(2);
+  hRU2VDC_WireVsTime_Clone->SetMarkerColor(kAzure+2);
+  hRU2VDC_WireVsTime_Clone->SetMarkerStyle(21);
+  hRU2VDC_WireVsTime_Clone->Draw();
+  
+  cR_split->cd(4);
+  hRV2VDC_WireVsTime_Clone->SetMarkerSize(2);
+  hRV2VDC_WireVsTime_Clone->SetMarkerColor(kAzure+3);
+  hRV2VDC_WireVsTime_Clone->SetMarkerStyle(21);
+  hRV2VDC_WireVsTime_Clone->Draw();
+  // END OF DRAWING
+
+  // Start from 1st entry in tree
+  Int_t ev{1};
+  Int_t prevev{1};
+
+  // Declare cuts
+  Double_t tpeak = 204.39; // in ns    
+
+  if(runno>4363 && runno<=4407){
+    tpeak = 200.5; 
+  }
+  else if(runno>=4425){
+    tpeak = 202.38;
+  }
+
+  Double_t twidth = 1.83; // 3 sigma (0.61 ns)
+
+  Double_t tmin = tpeak - twidth;
+  Double_t tmax = tpeak + twidth;
+
+  //TCut TimingCut  = Form("(1e9*(L.s2.time[L.s2.t_pads]-R.s2.time[R.s2.t_pads])-0.25*(DL.ltL1ARemote[0]-DR.rtL1Aremote[0]))<%f&&(1e9*(L.s2.time[L.s2.t_pads]-R.s2.time[R.s2.t_pads])-0.25*(DL.ltL1ARemote[0]-DR.rtL1Aremote[0]))>%f", tmax, tmin); // Coincidence timing cut
+  TCut TimingCut  = Form("L.s2.time[L.s2.t_pads]>%f", 1.2e-6);
+
+  // Apply cuts onto tree
+  C->Draw( ">>elist", "DL.evtype==2 && L.tr.n>0" + TimingCut,"entrylistarray");
+  TEntryList *elist=(TEntryList*)gDirectory->Get("elist");
+  Long64_t listEntries = elist->GetN();
+  int chainEntries=C->GetEntries();
+
+  cout << "Going to entry list " << endl;
+  C->SetEntryList(elist);
+  cout << "Set entry list " << endl;
+  std::cout<<"list entries = "<<listEntries<<std::endl;
+  std::cout<<"chain entries = "<< chainEntries << std::endl;
+  std::cout<<"Updated chain entries = "<< C->GetEntries() << std::endl;
+
+  Int_t treenum{0};
+
+  // MAIN LOOP START
+  while(kContinue){
+    if(ev%100 == 0) cout<<"Processing event "<<ev<<"/"<<chainEntries<<endl;
+
+    kContinue = kFALSE;
+
+    // Read in TTree
+    Long64_t treeEntry = elist->GetEntryAndTree(ev,treenum);
+    C->LoadTree(treeEntry); // this also returns treeEntry
+    Long64_t chainEntry = treeEntry+C->GetTreeOffset()[treenum];
+    C->GetEntry(chainEntry);
+    
+    // Reset previous histogram contents
+    hLU1VDC_WireVsTime->Reset("M");
+    hLU2VDC_WireVsTime->Reset("M");
+    hLV1VDC_WireVsTime->Reset("M");
+    hLV2VDC_WireVsTime->Reset("M");
+    hRU1VDC_WireVsTime->Reset("M");
+    hRU2VDC_WireVsTime->Reset("M");
+    hRV1VDC_WireVsTime->Reset("M");
+    hRV2VDC_WireVsTime->Reset("M");
+    hLS2_HitPad->Reset("M");
+    hLS2_HitProj->Reset("M");
+    hRS2_HitPad->Reset("M");
+    hRS2_HitProj->Reset("M");
+    hLU1VDC_WireVsTime_Clone->Reset("M");
+    hLU2VDC_WireVsTime_Clone->Reset("M");
+    hLV1VDC_WireVsTime_Clone->Reset("M");
+    hLV2VDC_WireVsTime_Clone->Reset("M");
+    hRU1VDC_WireVsTime_Clone->Reset("M");
+    hRU2VDC_WireVsTime_Clone->Reset("M");
+    hRV1VDC_WireVsTime_Clone->Reset("M");
+    hRV2VDC_WireVsTime_Clone->Reset("M");  
+
+    // Reset S2 time strings
+    for(int i{0}; i<16; i++){ 
+      sS2Time_L[i] = ""; 
+      sS2Time_R[i] = ""; 
+    }
+    
+    // Undo SetRangeUser commands done in previous loops
+    hLU1VDC_WireVsTime_Clone->GetXaxis()->SetRange(1,hLU1VDC_WireVsTime_Clone->GetNbinsX());
+    hLU2VDC_WireVsTime_Clone->GetXaxis()->SetRange(1,hLU2VDC_WireVsTime_Clone->GetNbinsX());
+    hLV1VDC_WireVsTime_Clone->GetXaxis()->SetRange(1,hLV1VDC_WireVsTime_Clone->GetNbinsX());
+    hLV2VDC_WireVsTime_Clone->GetXaxis()->SetRange(1,hLV2VDC_WireVsTime_Clone->GetNbinsX());
+    hRU1VDC_WireVsTime_Clone->GetXaxis()->SetRange(1,hRU1VDC_WireVsTime_Clone->GetNbinsX());
+    hRU2VDC_WireVsTime_Clone->GetXaxis()->SetRange(1,hRU2VDC_WireVsTime_Clone->GetNbinsX());
+    hRV1VDC_WireVsTime_Clone->GetXaxis()->SetRange(1,hRV1VDC_WireVsTime_Clone->GetNbinsX());
+    hRV2VDC_WireVsTime_Clone->GetXaxis()->SetRange(1,hRV2VDC_WireVsTime_Clone->GetNbinsX());
+    
+    //cout<<"Plotting event "<<ev<<endl;
+    cout<<"Plotting event "<<chainEntry<<endl;
+    cout<<"Number of identified tracks = "<<APEX_TreeVars.L_tr_n<<" (left) \t"<<APEX_TreeVars.R_tr_n<<" (right)"<<endl;
+
+    // Run over ALL hits in array - stores all, not just good hits
+    // LU1
+    for(int hit{0}; hit<APEX_TreeVars.Ndata_L_vdc_u1_wire; hit++){	
+      hLU1VDC_WireVsTime->Fill(APEX_TreeVars.L_vdc_u1_wire[hit],APEX_TreeVars.L_vdc_u1_rawtime[hit]);
+      hLU1VDC_WireVsTime_Clone->Fill(APEX_TreeVars.L_vdc_u1_wire[hit],APEX_TreeVars.L_vdc_u1_rawtime[hit]);
+    }
+    // LU2
+    for(int hit{0}; hit<APEX_TreeVars.Ndata_L_vdc_u2_wire; hit++){
+      hLU2VDC_WireVsTime->Fill(APEX_TreeVars.L_vdc_u2_wire[hit],APEX_TreeVars.L_vdc_u2_rawtime[hit]);
+      hLU2VDC_WireVsTime_Clone->Fill(APEX_TreeVars.L_vdc_u2_wire[hit],APEX_TreeVars.L_vdc_u2_rawtime[hit]);
+    }
+    // LV1
+    for(int hit{0}; hit<APEX_TreeVars.Ndata_L_vdc_v1_wire; hit++){
+      hLV1VDC_WireVsTime->Fill(APEX_TreeVars.L_vdc_v1_wire[hit],APEX_TreeVars.L_vdc_v1_rawtime[hit]);
+      hLV1VDC_WireVsTime_Clone->Fill(APEX_TreeVars.L_vdc_v1_wire[hit],APEX_TreeVars.L_vdc_v1_rawtime[hit]);
+    }
+    // LV2
+    for(int hit{0}; hit<APEX_TreeVars.Ndata_L_vdc_v2_wire; hit++){
+      hLV2VDC_WireVsTime->Fill(APEX_TreeVars.L_vdc_v2_wire[hit],APEX_TreeVars.L_vdc_v2_rawtime[hit]);
+      hLV2VDC_WireVsTime_Clone->Fill(APEX_TreeVars.L_vdc_v2_wire[hit],APEX_TreeVars.L_vdc_v2_rawtime[hit]);
+    }
+    // RU1
+    for(int hit{0}; hit<APEX_TreeVars.Ndata_R_vdc_u1_wire; hit++){
+      hRU1VDC_WireVsTime->Fill(APEX_TreeVars.R_vdc_u1_wire[hit],APEX_TreeVars.R_vdc_u1_rawtime[hit]);
+      hRU1VDC_WireVsTime_Clone->Fill(APEX_TreeVars.R_vdc_u1_wire[hit],APEX_TreeVars.R_vdc_u1_rawtime[hit]);
+    }
+    // RU2
+    for(int hit{0}; hit<APEX_TreeVars.Ndata_R_vdc_u2_wire; hit++){
+      hRU2VDC_WireVsTime->Fill(APEX_TreeVars.R_vdc_u2_wire[hit],APEX_TreeVars.R_vdc_u2_rawtime[hit]);
+      hRU2VDC_WireVsTime_Clone->Fill(APEX_TreeVars.R_vdc_u2_wire[hit],APEX_TreeVars.R_vdc_u2_rawtime[hit]);
+    }
+    // RV1
+    for(int hit{0}; hit<APEX_TreeVars.Ndata_R_vdc_v1_wire; hit++){
+      hRV1VDC_WireVsTime->Fill(APEX_TreeVars.R_vdc_v1_wire[hit],APEX_TreeVars.R_vdc_v1_rawtime[hit]);
+      hRV1VDC_WireVsTime_Clone->Fill(APEX_TreeVars.R_vdc_v1_wire[hit],APEX_TreeVars.R_vdc_v1_rawtime[hit]);
+    }
+    // RV2
+    for(int hit{0}; hit<APEX_TreeVars.Ndata_R_vdc_v2_wire; hit++){
+      hRV2VDC_WireVsTime->Fill(APEX_TreeVars.R_vdc_v2_wire[hit],APEX_TreeVars.R_vdc_v2_rawtime[hit]);
+      hRV2VDC_WireVsTime_Clone->Fill(APEX_TreeVars.R_vdc_v2_wire[hit],APEX_TreeVars.R_vdc_v2_rawtime[hit]);
+    }
+    // LS2 - hits
+    for(int hit{0}; hit<APEX_TreeVars.Ndata_L_s2_t_pads; hit++){
+      hLS2_HitPad->Fill(15-APEX_TreeVars.L_s2_t_pads[hit]);
+      sS2Time_L[(int)(15-APEX_TreeVars.L_s2_t_pads[hit])] = Form("%4.3f #mus",1e6*APEX_TreeVars.L_s2_time[(int)(15-APEX_TreeVars.L_s2_t_pads[hit])]);
+    }
+    // LS2 - projected
+    for(int hit{0}; hit<APEX_TreeVars.Ndata_L_s2_trpad; hit++){
+      hLS2_HitProj->Fill(15-APEX_TreeVars.L_s2_trpad[hit],0.7);
+    }
+    // RS2
+    for(int hit{0}; hit<APEX_TreeVars.Ndata_R_s2_t_pads; hit++){
+      hRS2_HitPad->Fill(15-APEX_TreeVars.R_s2_t_pads[hit]);
+      sS2Time_R[(int)(15-APEX_TreeVars.R_s2_t_pads[hit])] = Form("%4.3f #mus",1e6*APEX_TreeVars.R_s2_time[(int)(15-APEX_TreeVars.R_s2_t_pads[hit])]);
+    }
+    // RS2 - projected
+    for(int hit{0}; hit<APEX_TreeVars.Ndata_R_s2_trpad; hit++){
+      hRS2_HitProj->Fill(15-APEX_TreeVars.R_s2_trpad[hit],0.7);
+    }
+
+    // Update canvases
+    hLU1VDC_WireVsTime_Clone->GetXaxis()->SetRange( hLU1VDC_WireVsTime_Clone->ProjectionX()->FindFirstBinAbove(0,1,1,-1)-5 , hLU1VDC_WireVsTime_Clone->ProjectionX()->FindLastBinAbove(0,1,1,-1)+5  );
+    hLV1VDC_WireVsTime_Clone->GetXaxis()->SetRange( hLV1VDC_WireVsTime_Clone->ProjectionX()->FindFirstBinAbove(0,1,1,-1)-5 , hLV1VDC_WireVsTime_Clone->ProjectionX()->FindLastBinAbove(0,1,1,-1)+5  );
+    hLU2VDC_WireVsTime_Clone->GetXaxis()->SetRange( hLU2VDC_WireVsTime_Clone->ProjectionX()->FindFirstBinAbove(0,1,1,-1)-5 , hLU2VDC_WireVsTime_Clone->ProjectionX()->FindLastBinAbove(0,1,1,-1)+5  );
+    hLV2VDC_WireVsTime_Clone->GetXaxis()->SetRange( hLV2VDC_WireVsTime_Clone->ProjectionX()->FindFirstBinAbove(0,1,1,-1)-5 , hLV2VDC_WireVsTime_Clone->ProjectionX()->FindLastBinAbove(0,1,1,-1)+5  );
+    hRU1VDC_WireVsTime_Clone->GetXaxis()->SetRange( hRU1VDC_WireVsTime_Clone->ProjectionX()->FindFirstBinAbove(0,1,1,-1)-5 , hRU1VDC_WireVsTime_Clone->ProjectionX()->FindLastBinAbove(0,1,1,-1)+5  );
+    hRV1VDC_WireVsTime_Clone->GetXaxis()->SetRange( hRV1VDC_WireVsTime_Clone->ProjectionX()->FindFirstBinAbove(0,1,1,-1)-5 , hRV1VDC_WireVsTime_Clone->ProjectionX()->FindLastBinAbove(0,1,1,-1)+5  );
+    hRU2VDC_WireVsTime_Clone->GetXaxis()->SetRange( hRU2VDC_WireVsTime_Clone->ProjectionX()->FindFirstBinAbove(0,1,1,-1)-5 , hRU2VDC_WireVsTime_Clone->ProjectionX()->FindLastBinAbove(0,1,1,-1)+5  );
+    hRV2VDC_WireVsTime_Clone->GetXaxis()->SetRange( hRV2VDC_WireVsTime_Clone->ProjectionX()->FindFirstBinAbove(0,1,1,-1)-5 , hRV2VDC_WireVsTime_Clone->ProjectionX()->FindLastBinAbove(0,1,1,-1)+5  );
+
+    TLatex text;
+
+    cL->cd();
+    cL->Clear();
+    cL->Update();
+    cL->Divide(1,5,0,0);
+    cL->cd(5);
+    hLU1VDC_WireVsTime->Draw();
+    lVDCRawtimePeak->Draw();
+    cL->cd(4);
+    hLV1VDC_WireVsTime->Draw();
+    lVDCRawtimePeak->Draw();
+    cL->cd(3);
+    hLU2VDC_WireVsTime->Draw();
+    lVDCRawtimePeak->Draw();
+    cL->cd(2);
+    hLV2VDC_WireVsTime->Draw();
+    lVDCRawtimePeak->Draw();
+    cL->cd(1);
+    hS2_PaddleFrame->Draw("B");
+    hLS2_HitPad->Draw("P same");
+    hLS2_HitProj->Draw("HIST P same");
+    for(int i{0}; i<16; i++){
+      text.DrawLatex(i-0.1, 1.1, sS2Time_L[i]);
+    }
+    cL->cd();
+    cL->Update();
+      
+    cR->cd();
+    cR->Clear();
+    cR->Update();
+    cR->Divide(1,5,0,0);
+    cR->cd(5);
+    hRU1VDC_WireVsTime->Draw();
+    cR->cd(4);
+    hRV1VDC_WireVsTime->Draw();
+    cR->cd(3);
+    hRU2VDC_WireVsTime->Draw();
+    cR->cd(2);
+    hRV2VDC_WireVsTime->Draw();
+    cR->cd(1);
+    hS2_PaddleFrame->Draw("B");
+    hRS2_HitPad->Draw("P same");
+    hRS2_HitProj->Draw("HIST P same");
+    cR->cd();
+    cR->Update();
+ 
+    cL_split->cd();
+    cL_split->Clear();
+    cL_split->Update();
+    cL_split->Divide(2,2);
+    cL_split->cd(1);
+    hLU1VDC_WireVsTime_Clone->Draw();
+    cL_split->cd(2);
+    hLV1VDC_WireVsTime_Clone->Draw();
+    cL_split->cd(3);
+    hLU2VDC_WireVsTime_Clone->Draw();
+    cL_split->cd(4);
+    hLV2VDC_WireVsTime_Clone->Draw();
+    cL_split->cd();
+    cL_split->Update();
+
+    cR_split->cd();
+    cR_split->Clear();
+    cR_split->Update();
+    cR_split->Divide(2,2);
+    cR_split->cd(1);
+    hRU1VDC_WireVsTime_Clone->Draw();
+    cR_split->cd(2);
+    hRV1VDC_WireVsTime_Clone->Draw();
+    cR_split->cd(3);
+    hRU2VDC_WireVsTime_Clone->Draw();
+    cR_split->cd(4);
+    hRV2VDC_WireVsTime_Clone->Draw();
+    cR_split->cd();
+    cR_split->Update();
+
+    char cont;
+
+    cout<<"Press 'n' to display next event. Press 'p' to display previous event. Press any other key to quit..."<<endl;
+    cin>>cont;
+
+    // If looking at next event, store current event in case of overshoot
+    if(cont == 'n'){
+      kContinue = kTRUE;
+      prevev = ev;
+      ev++;
+      continue;
+    }
+    // In case of overshoot, go to previous relevant event
+    else if(cont == 'p'){
+      kContinue = kTRUE;
+      ev = prevev;
+      continue;
+    }
+
+  } // MAIN LOOP END
+  
+
+  return;
+}
+
+
+void SetBranchStatuses(TChain* C){
+  // Activate branches relevant for macro
+  C->SetBranchStatus("*",0);
+  
+  // VDC planes - LHRS (wire no. and rawtime)
+  C->SetBranchStatus("L.vdc.u1.wire",1);
+  C->SetBranchStatus("L.vdc.u2.wire",1);
+  C->SetBranchStatus("L.vdc.v1.wire",1);
+  C->SetBranchStatus("L.vdc.v2.wire",1);
+  C->SetBranchStatus("L.vdc.u1.rawtime",1);
+  C->SetBranchStatus("L.vdc.u2.rawtime",1);
+  C->SetBranchStatus("L.vdc.v1.rawtime",1);
+  C->SetBranchStatus("L.vdc.v2.rawtime",1);
+  C->SetBranchStatus("Ndata.L.vdc.u1.wire",1);
+  C->SetBranchStatus("Ndata.L.vdc.u2.wire",1);
+  C->SetBranchStatus("Ndata.L.vdc.v1.wire",1);
+  C->SetBranchStatus("Ndata.L.vdc.v2.wire",1);
+  // VDC planes - RHRS (wire no. and rawtime)
+  C->SetBranchStatus("R.vdc.u1.wire",1);
+  C->SetBranchStatus("R.vdc.u2.wire",1);
+  C->SetBranchStatus("R.vdc.v1.wire",1);
+  C->SetBranchStatus("R.vdc.v2.wire",1);
+  C->SetBranchStatus("R.vdc.u1.rawtime",1);
+  C->SetBranchStatus("R.vdc.u2.rawtime",1);
+  C->SetBranchStatus("R.vdc.v1.rawtime",1);
+  C->SetBranchStatus("R.vdc.v2.rawtime",1);
+  C->SetBranchStatus("Ndata.R.vdc.u1.wire",1);
+  C->SetBranchStatus("Ndata.R.vdc.u2.wire",1);
+  C->SetBranchStatus("Ndata.R.vdc.v1.wire",1);
+  C->SetBranchStatus("Ndata.R.vdc.v2.wire",1);
+  // S2 scintillator pads
+  C->SetBranchStatus("L.s2.time",1);
+  C->SetBranchStatus("L.s2.t_pads",1);
+  C->SetBranchStatus("L.s2.trpad",1);
+  C->SetBranchStatus("Ndata.L.s2.time",1);
+  C->SetBranchStatus("Ndata.L.s2.t_pads",1);
+  C->SetBranchStatus("Ndata.L.s2.trpad",1);
+  C->SetBranchStatus("R.s2.time",1);
+  C->SetBranchStatus("R.s2.t_pads",1);
+  C->SetBranchStatus("R.s2.trpad",1);
+  C->SetBranchStatus("Ndata.R.s2.time",1);
+  C->SetBranchStatus("Ndata.R.s2.t_pads",1);
+  C->SetBranchStatus("Ndata.R.s2.trpad",1);
+  // Global properties (L1 trigger, track number and event type)
+  C->SetBranchStatus("DL.ltL1ARemote",1);
+  C->SetBranchStatus("DR.rtL1Aremote",1);
+  C->SetBranchStatus("L.tr.n",1);
+  C->SetBranchStatus("R.tr.n",1);
+  C->SetBranchStatus("DL.evtype",1);
+
+  return;
+}
+

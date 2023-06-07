@@ -1,0 +1,206 @@
+//-----------------------------------------------------------------------------
+// APEX VDC track analysis
+// Oliver Jevons; 06-June-23
+//
+// Inputs: 
+// 1. Path to full replayed APEX file
+//
+// Output:
+// 1. Canvas with average timing for each cluster
+//-----------------------------------------------------------------------------
+#include <TFile.h>
+#include <TTree.h>
+#include <TH2.h>
+#include "TEntryList.h"
+
+#include <iostream>
+
+using namespace std;
+
+// Tree variable structure
+struct APEXTreeVarStruct{
+  // VDC plane variables
+  Int_t Ndata_L_vdc_u1_wire, Ndata_L_vdc_u2_wire, Ndata_L_vdc_v1_wire, Ndata_L_vdc_v2_wire;
+  Int_t Ndata_L_vdc_u1_wiresum, Ndata_L_vdc_u2_wiresum, Ndata_L_vdc_v1_wiresum, Ndata_L_vdc_v2_wiresum;
+  Int_t Ndata_R_vdc_u1_wire, Ndata_R_vdc_u2_wire, Ndata_R_vdc_v1_wire, Ndata_R_vdc_v2_wire;
+  Double_t L_vdc_u1_wire[200], L_vdc_u2_wire[200], L_vdc_v1_wire[200], L_vdc_v2_wire[200];
+  Double_t L_vdc_u1_wiresum[200], L_vdc_u2_wiresum[200], L_vdc_v1_wiresum[200], L_vdc_v2_wiresum[200];
+  Double_t L_vdc_u1_clsiz[200], L_vdc_u2_clsiz[200], L_vdc_v1_clsiz[200], L_vdc_v2_clsiz[200];
+  Double_t R_vdc_u1_wire[200], R_vdc_u2_wire[200], R_vdc_v1_wire[200], R_vdc_v2_wire[200];
+  Double_t L_vdc_u1_rawtime[200], L_vdc_u2_rawtime[200], L_vdc_v1_rawtime[200], L_vdc_v2_rawtime[200];
+  Double_t L_vdc_u1_timesum[200], L_vdc_u2_timesum[200], L_vdc_v1_timesum[200], L_vdc_v2_timesum[200];
+  Double_t R_vdc_u1_rawtime[200], R_vdc_u2_rawtime[200], R_vdc_v1_rawtime[200], R_vdc_v2_rawtime[200];
+  // S2 scintillator variables
+  Int_t Ndata_L_s2_time, Ndata_R_s2_time, Ndata_L_s2_t_pads, Ndata_R_s2_t_pads, Ndata_L_s2_trpad, Ndata_R_s2_trpad;
+  Double_t L_s2_time[100], L_s2_t_pads[100], L_s2_trpad[4];
+  Double_t R_s2_time[100], R_s2_t_pads[100], R_s2_trpad[4];
+  // Global variables
+  Double_t DL_ltL1ARemote, DR_rtL1ARemote;
+  Double_t L_tr_n, R_tr_n;
+  Double_t DL_evtype;
+};
+
+TH1F* hLU1_AvgClSize = new TH1F("hLU1_AvgClSize","",1000,0,500);
+
+// Prototype function
+void SetBranchStatuses(TChain* C);
+
+void APEX_VDC_Analysis(Int_t runno = 4400){
+  // Load run into TChain
+  TChain* C = new TChain("T");
+  //TString sFile = "/w/work5/jlab/halla/APEX/full_events/apex_" + std::to_string(runno) +"*.root";
+  TString sFile = "/scratch/oliver/apex_" + std::to_string(runno) +"*.root";
+  C->Add(sFile);
+
+  cout<<"\nAll files for run "<<runno<<" added.\n"<<endl;
+
+  // Activate branches relevant for macro
+  SetBranchStatuses(C);
+    
+  APEXTreeVarStruct APEX_TreeVars;
+
+  // Set Branch Addresses  
+  // LHRS VDC
+  C->SetBranchAddress("Ndata.L.vdc.u1.wire",&APEX_TreeVars.Ndata_L_vdc_u1_wire);
+  C->SetBranchAddress("Ndata.L.vdc.u2.wire",&APEX_TreeVars.Ndata_L_vdc_u2_wire);
+  C->SetBranchAddress("Ndata.L.vdc.v1.wire",&APEX_TreeVars.Ndata_L_vdc_v1_wire);
+  C->SetBranchAddress("Ndata.L.vdc.v2.wire",&APEX_TreeVars.Ndata_L_vdc_v2_wire);
+  C->SetBranchAddress("Ndata.L.vdc.u1.wiresum",&APEX_TreeVars.Ndata_L_vdc_u1_wiresum);
+  C->SetBranchAddress("Ndata.L.vdc.u2.wiresum",&APEX_TreeVars.Ndata_L_vdc_u2_wiresum);
+  C->SetBranchAddress("Ndata.L.vdc.v1.wiresum",&APEX_TreeVars.Ndata_L_vdc_v1_wiresum);
+  C->SetBranchAddress("Ndata.L.vdc.v2.wiresum",&APEX_TreeVars.Ndata_L_vdc_v2_wiresum);
+  C->SetBranchAddress("L.vdc.u1.wire",&APEX_TreeVars.L_vdc_u1_wire);
+  C->SetBranchAddress("L.vdc.u2.wire",&APEX_TreeVars.L_vdc_u2_wire);
+  C->SetBranchAddress("L.vdc.v1.wire",&APEX_TreeVars.L_vdc_v1_wire);
+  C->SetBranchAddress("L.vdc.v2.wire",&APEX_TreeVars.L_vdc_v2_wire);
+  C->SetBranchAddress("L.vdc.u1.rawtime",&APEX_TreeVars.L_vdc_u1_rawtime);
+  C->SetBranchAddress("L.vdc.u2.rawtime",&APEX_TreeVars.L_vdc_u2_rawtime);
+  C->SetBranchAddress("L.vdc.v1.rawtime",&APEX_TreeVars.L_vdc_v1_rawtime);
+  C->SetBranchAddress("L.vdc.v2.rawtime",&APEX_TreeVars.L_vdc_v2_rawtime);
+  C->SetBranchAddress("L.vdc.u1.wiresum",&APEX_TreeVars.L_vdc_u1_wiresum);
+  C->SetBranchAddress("L.vdc.u2.wiresum",&APEX_TreeVars.L_vdc_u2_wiresum);
+  C->SetBranchAddress("L.vdc.v1.wiresum",&APEX_TreeVars.L_vdc_v1_wiresum);
+  C->SetBranchAddress("L.vdc.v2.wiresum",&APEX_TreeVars.L_vdc_v2_wiresum);
+  C->SetBranchAddress("L.vdc.u1.clsiz",&APEX_TreeVars.L_vdc_u1_clsiz);
+  C->SetBranchAddress("L.vdc.u2.clsiz",&APEX_TreeVars.L_vdc_u2_clsiz);
+  C->SetBranchAddress("L.vdc.v1.clsiz",&APEX_TreeVars.L_vdc_v1_clsiz);
+  C->SetBranchAddress("L.vdc.v2.clsiz",&APEX_TreeVars.L_vdc_v2_clsiz);
+  // RHRS VDC
+  C->SetBranchAddress("Ndata.R.vdc.u1.wire",&APEX_TreeVars.Ndata_R_vdc_u1_wire);
+  C->SetBranchAddress("Ndata.R.vdc.u2.wire",&APEX_TreeVars.Ndata_R_vdc_u2_wire);
+  C->SetBranchAddress("Ndata.R.vdc.v1.wire",&APEX_TreeVars.Ndata_R_vdc_v1_wire);
+  C->SetBranchAddress("Ndata.R.vdc.v2.wire",&APEX_TreeVars.Ndata_R_vdc_v2_wire);
+  C->SetBranchAddress("R.vdc.u1.wire",&APEX_TreeVars.R_vdc_u1_wire);
+  C->SetBranchAddress("R.vdc.u2.wire",&APEX_TreeVars.R_vdc_u2_wire);
+  C->SetBranchAddress("R.vdc.v1.wire",&APEX_TreeVars.R_vdc_v1_wire);
+  C->SetBranchAddress("R.vdc.v2.wire",&APEX_TreeVars.R_vdc_v2_wire);
+  C->SetBranchAddress("R.vdc.u1.rawtime",&APEX_TreeVars.R_vdc_u1_rawtime);
+  C->SetBranchAddress("R.vdc.u2.rawtime",&APEX_TreeVars.R_vdc_u2_rawtime);
+  C->SetBranchAddress("R.vdc.v1.rawtime",&APEX_TreeVars.R_vdc_v1_rawtime);
+  C->SetBranchAddress("R.vdc.v2.rawtime",&APEX_TreeVars.R_vdc_v2_rawtime);
+  // S2
+  C->SetBranchAddress("L.s2.time",&APEX_TreeVars.L_s2_time);
+  C->SetBranchAddress("L.s2.t_pads",&APEX_TreeVars.L_s2_t_pads);
+  C->SetBranchAddress("L.s2.trpad",&APEX_TreeVars.L_s2_trpad);
+  C->SetBranchAddress("Ndata.L.s2.t_pads",&APEX_TreeVars.Ndata_L_s2_time);
+  C->SetBranchAddress("Ndata.L.s2.t_pads",&APEX_TreeVars.Ndata_L_s2_t_pads);
+  C->SetBranchAddress("Ndata.L.s2.trpad",&APEX_TreeVars.Ndata_L_s2_trpad);
+  C->SetBranchAddress("R.s2.time",&APEX_TreeVars.R_s2_time);
+  C->SetBranchAddress("R.s2.t_pads",&APEX_TreeVars.R_s2_t_pads);
+  C->SetBranchAddress("R.s2.trpad",&APEX_TreeVars.R_s2_trpad);
+  C->SetBranchAddress("Ndata.R.s2.t_pads",&APEX_TreeVars.Ndata_R_s2_time);
+  C->SetBranchAddress("Ndata.R.s2.t_pads",&APEX_TreeVars.Ndata_R_s2_t_pads);
+  C->SetBranchAddress("Ndata.R.s2.trpad",&APEX_TreeVars.Ndata_R_s2_trpad);
+  // Global
+  C->SetBranchAddress("DL.ltL1ARemote",&APEX_TreeVars.DL_ltL1ARemote);
+  C->SetBranchAddress("DR.rtL1Aremote",&APEX_TreeVars.DR_rtL1ARemote);
+  C->SetBranchAddress("L.tr.n",&APEX_TreeVars.L_tr_n);
+  C->SetBranchAddress("R.tr.n",&APEX_TreeVars.R_tr_n);
+  C->SetBranchAddress("DL.evtype",&APEX_TreeVars.DL_evtype);
+  
+  Long64_t nentries = C->GetEntries();
+  nentries = 1000; // for testing
+
+  cout<<"Processing "<<nentries<<" entries"<<endl;
+
+  Long64_t lOneTenth = ((double)(nentries) / 10.);
+  for(Long64_t ev{0}; ev<nentries; ev++){
+    if(ev%lOneTenth==0) cout<<(long)(((double)(ev)/(double)(nentries))*100.001)<<"% processed"<<endl;
+    C->GetEntry(ev);
+  
+    for(int iClust{0}; iClust<APEX_TreeVars.Ndata_L_vdc_u1_wiresum; iClust++){
+      hLU1_AvgClSize->Fill((Double_t)APEX_TreeVars.L_vdc_u1_wiresum[iClust] / APEX_TreeVars.L_vdc_u1_clsiz[iClust]);
+    }
+  }
+
+  hLU1_AvgClSize->Draw();
+}
+
+void SetBranchStatuses(TChain* C){
+  // Activate branches relevant for macro
+  C->SetBranchStatus("*",0);
+  
+  // VDC planes - LHRS (wire no. and rawtime)
+  C->SetBranchStatus("L.vdc.u1.wire",1);
+  C->SetBranchStatus("L.vdc.u2.wire",1);
+  C->SetBranchStatus("L.vdc.v1.wire",1);
+  C->SetBranchStatus("L.vdc.v2.wire",1);
+  C->SetBranchStatus("L.vdc.u1.wiresum",1);
+  C->SetBranchStatus("L.vdc.u2.wiresum",1);
+  C->SetBranchStatus("L.vdc.v1.wiresum",1);
+  C->SetBranchStatus("L.vdc.v2.wiresum",1);
+  C->SetBranchStatus("L.vdc.u1.clsiz",1);
+  C->SetBranchStatus("L.vdc.u2.clsiz",1);
+  C->SetBranchStatus("L.vdc.v1.clsiz",1);
+  C->SetBranchStatus("L.vdc.v2.clsiz",1);
+  C->SetBranchStatus("L.vdc.u1.rawtime",1);
+  C->SetBranchStatus("L.vdc.u2.rawtime",1);
+  C->SetBranchStatus("L.vdc.v1.rawtime",1);
+  C->SetBranchStatus("L.vdc.v2.rawtime",1);
+  C->SetBranchStatus("L.vdc.u1.timesum",1);
+  C->SetBranchStatus("L.vdc.u2.timesum",1);
+  C->SetBranchStatus("L.vdc.v1.timesum",1);
+  C->SetBranchStatus("L.vdc.v2.timesum",1);
+  C->SetBranchStatus("Ndata.L.vdc.u1.wire",1);
+  C->SetBranchStatus("Ndata.L.vdc.u2.wire",1);
+  C->SetBranchStatus("Ndata.L.vdc.v1.wire",1);
+  C->SetBranchStatus("Ndata.L.vdc.v2.wire",1);
+  C->SetBranchStatus("Ndata.L.vdc.u1.wiresum",1);
+  C->SetBranchStatus("Ndata.L.vdc.u2.wiresum",1);
+  C->SetBranchStatus("Ndata.L.vdc.v1.wiresum",1);
+  C->SetBranchStatus("Ndata.L.vdc.v2.wiresum",1);
+  // VDC planes - RHRS (wire no. and rawtime)
+  C->SetBranchStatus("R.vdc.u1.wire",1);
+  C->SetBranchStatus("R.vdc.u2.wire",1);
+  C->SetBranchStatus("R.vdc.v1.wire",1);
+  C->SetBranchStatus("R.vdc.v2.wire",1);
+  C->SetBranchStatus("R.vdc.u1.rawtime",1);
+  C->SetBranchStatus("R.vdc.u2.rawtime",1);
+  C->SetBranchStatus("R.vdc.v1.rawtime",1);
+  C->SetBranchStatus("R.vdc.v2.rawtime",1);
+  C->SetBranchStatus("Ndata.R.vdc.u1.wire",1);
+  C->SetBranchStatus("Ndata.R.vdc.u2.wire",1);
+  C->SetBranchStatus("Ndata.R.vdc.v1.wire",1);
+  C->SetBranchStatus("Ndata.R.vdc.v2.wire",1);
+  // S2 scintillator pads
+  C->SetBranchStatus("L.s2.time",1);
+  C->SetBranchStatus("L.s2.t_pads",1);
+  C->SetBranchStatus("L.s2.trpad",1);
+  C->SetBranchStatus("Ndata.L.s2.time",1);
+  C->SetBranchStatus("Ndata.L.s2.t_pads",1);
+  C->SetBranchStatus("Ndata.L.s2.trpad",1);
+  C->SetBranchStatus("R.s2.time",1);
+  C->SetBranchStatus("R.s2.t_pads",1);
+  C->SetBranchStatus("R.s2.trpad",1);
+  C->SetBranchStatus("Ndata.R.s2.time",1);
+  C->SetBranchStatus("Ndata.R.s2.t_pads",1);
+  C->SetBranchStatus("Ndata.R.s2.trpad",1);
+  // Global properties (L1 trigger, track number and event type)
+  C->SetBranchStatus("DL.ltL1ARemote",1);
+  C->SetBranchStatus("DR.rtL1Aremote",1);
+  C->SetBranchStatus("L.tr.n",1);
+  C->SetBranchStatus("R.tr.n",1);
+  C->SetBranchStatus("DL.evtype",1);
+
+  return;
+}

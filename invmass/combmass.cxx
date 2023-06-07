@@ -1,0 +1,93 @@
+//-------------------------------------------------------------------------------------
+// Code to combine output from invariant mass jobs
+// Need to perform this on .txt files, not ROOT files (to be able to create histogram
+// Oliver Jevons; 08-Nov-2022
+//
+// Inputs: 
+// 1. Path to job output
+// 2. If final file is to be blinded or not
+//-------------------------------------------------------------------------------------
+
+#include <iostream>
+#include <TFile.h>
+#include <TString.h>
+
+const TString sFilePath = "/w/work2/home/oliver/APEX/invmass/TrimAsJW";
+
+// Function to read in input files, and fill histogram
+Int_t ReadMass(TString fname, TH1F* hist, Int_t Count = 0, Bool_t IsBlind = true){
+  
+  // Open input file and read line-by-line
+  ifstream inp;
+  inp.open(fname.Data());
+  
+  Double_t a;
+  while(inp >> a){
+    // If wanting blind file, only take 10% of data
+    if(IsBlind){
+      if(Count%10==0){
+	hist->Fill(a*1e-3); // factor 1e-3 to convert to GeV
+      }
+    }
+    // If not, take all data
+    else hist->Fill(a*1e-3);
+    Count++;
+  }
+
+  inp.close();
+  
+  // Return event count after each file to roll over blinding
+  return Count;  
+}
+
+void combmass(Bool_t IsBlind=false){
+  TString TxtFileLocn = sFilePath + "/output"; // NOTE: Need to use TString.Data() to access underlying string in 'const char*' form
+  const char *ext = ".txt";
+  
+  // Load in directory of root files
+  TSystemDirectory dir(TxtFileLocn.Data(), TxtFileLocn.Data());
+  TList *files = dir.GetListOfFiles();
+  files->Sort();
+  
+  // Define histogram
+  TH1F* hMassRebin = new TH1F("masshist","Calculated invariant mass (GeV)",4000,0.1,0.3); // bin width defined as 0.05 MeV
+  hMassRebin->GetXaxis()->SetTitle("m_{e^{+}e^{-}}(GeV/c^2)");
+  hMassRebin->Rebin(3); // Rebinning; combining 3 bins into 1 -> defines bin width as 0.15 MeV
+  
+  // Define event counter (needed if blinding data)
+  Int_t Count{0};
+  
+  // Run over all files in dir
+  // If file is .txt, run over all events and fill histogram
+  if(files){
+    TFile *file;
+    TString fname;
+    TIter next(files);
+    while ((file=(TFile*)next())) {
+      fname = Form("%s/%s",TxtFileLocn.Data(),file->GetName());
+      cout << "Looking at file = " << fname << ", Curerent count = " << Count << endl;
+      if (fname.EndsWith(ext)) {
+	cout << fname.Data() << endl;
+	Count = ReadMass(fname,hMassRebin,Count,IsBlind);
+      }
+      cout << endl;
+    }
+  }
+
+  TCanvas *c1 = new TCanvas("c1","Invariant Mass Spectrum",1000,800);
+  c1->cd(1);
+  hMassRebin->Draw();
+   
+  // save mass hist to file 
+  TString sOutFileName;
+  if(!IsBlind) sOutFileName = sFilePath + "/combmass_15MeV.root";
+  else if (IsBlind) sOutFileName = sFilePath + "/combmass_15MeV_blind.root";
+  std::unique_ptr<TFile> myFile( TFile::Open(sOutFileName, "RECREATE") );
+
+  myFile->WriteObject(hMassRebin,"masshist");
+  myFile->Close();
+  
+  std::cout<<"Histogram written to "<<sOutFileName<<std::endl;
+  
+  return 0;
+}
